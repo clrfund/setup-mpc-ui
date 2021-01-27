@@ -4,3 +4,4 @@ dist
 firebase_skey*.json
 ceremony_data/*
 data
+.env

@@ -1,56 +1,37 @@
-import { Switch, Route, HashRouter } from "react-router-dom";
-import * as React from "react";
+import * as React from 'react';
+import { useReducer } from "react";
 import { createGlobalStyle } from "styled-components";
-import firebase from "firebase";
 import { textColor } from "../styles";
 import { LandingPage } from "./LandingPage";
-import { CeremonyPage } from "./CeremonyPage";
+import { AuthContextProvider, authStateReducer, defaultAuth } from "../state/AuthContext";
+import { SelectionContextProvider } from '../state/SelectionContext';
+import firebase from "firebase/app";
 import firebaseConfig from "./firebaseConfig";
+import "firebase/auth";
+import "firebase/firestore";
+import "firebase/storage";
+import { SnackbarProvider } from "notistack";
+import { ComputeContextProvider } from '../state/ComputeStateManager';
 
 firebase.initializeApp(firebaseConfig);
+firebase.firestore().settings({ experimentalForceLongPolling: true });
 
-export interface AuthContextInterface {
-  isLoggedIn: boolean,
-  setLoggedIn: (b: boolean) => void,
-  authUser: any,
-  setAuthUser: (u: any | null) => void
-};
-const defaultAuth: AuthContextInterface = {
-  isLoggedIn: false,
-  setLoggedIn: () => false,
-  authUser: {},
-  setAuthUser: () => null
-};
-export const AuthContext = React.createContext<AuthContextInterface>(defaultAuth);
-
-function useAuthContextValue(): AuthContextInterface {
-  const [isLoggedIn, setLoggedIn] = React.useState( false );
-  const [authUser, setAuthUser] = React.useState( {} );
-
-  return {
-    isLoggedIn,
-    setLoggedIn,
-    authUser,
-    setAuthUser
-  }
-}
 
 const App = () => {
 
+  console.log(`Firebase inited ${firebase.app.name}`);
+  console.log(`auth user: ${firebase.auth().currentUser?.displayName}`);
   return (
-    <AuthContext.Provider value={ useAuthContextValue() }>
-      <HashRouter>
-        <GlobalStyle />
-        <Switch>
-          <Route exact path="/ceremony/:id">
-            <CeremonyPage />
-          </Route>
-          <Route exact path="/">
-            <LandingPage />
-          </Route>
-        </Switch>
-      </HashRouter>
-    </AuthContext.Provider>
+    <AuthContextProvider>
+      <SelectionContextProvider>
+        <ComputeContextProvider>
+          <SnackbarProvider maxSnack={4}>
+              <GlobalStyle />
+              <LandingPage />
+          </SnackbarProvider>
+        </ComputeContextProvider>
+      </SelectionContextProvider>
+    </AuthContextProvider>
   );
 };
 

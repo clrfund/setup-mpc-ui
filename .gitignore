@@ -3,3 +3,4 @@
 **/firebaseConfig.*
 **/.env
 **/*.log
+**/data/**

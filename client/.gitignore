@@ -7,3 +7,5 @@ build
 firebaseConfig.*
 .env*
 .firebase
+.env
+*/**/*.params

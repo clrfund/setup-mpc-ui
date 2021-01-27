@@ -1,4 +1,5 @@
 const admin = require("firebase-admin");
+//const { prepareCircuit } = require("./CircuitHandler");
 const serviceAccount = require("./firebase_skey.json");
 
 admin.initializeApp({
@@ -12,7 +13,7 @@ async function getFBSummaries() {
   const ceremonySummariesSnapshot = await db.collection("ceremonies").get();
   const fbSummaries = [];
   ceremonySummariesSnapshot.forEach(doc => {
-    fbSummaries.push(firebaseCeremonyJsonToSummary(doc.data()));
+    fbSummaries.push(firebaseCeremonyJsonToSummary({id: doc.id, ...doc.data()}));
   });
   return fbSummaries;
 }
@@ -25,7 +26,7 @@ async function getFBSummary(id) {
   if (!doc.exists) {
     throw new Error("ceremony not found");
   }
-  return firebaseCeremonyJsonToSummary(doc.data());
+  return firebaseCeremonyJsonToSummary({id: doc.id, ...doc.data()});
 }
 
 async function getFBCeremony(id) {
@@ -36,6 +37,7 @@ async function getFBCeremony(id) {
   if (!doc.exists) {
     throw new Error("ceremony not found");
   }
+  console.log(`getFBCeremony ${doc.exists}`);
   const missingParticipants = firebaseCeremonyJsonToSummary(doc.data());
   const participants = [];
   const participantsSnapshot = await db
@@ -87,22 +89,9 @@ async function updateFBCeremony(newCeremony) {
     {
       ...rest,
       lastSummaryUpdate: new Date(),
-      lastParticipantsUpdate: new Date()
     },
     { merge: true }
   );
-  const participantUpdatesPromises = [];
-  for (const participant of newCeremony.participants) {
-    const participantDocRef = db
-      .collection("ceremonyParticipants")
-      .doc(newCeremony.id)
-      .collection("participants")
-      .doc(participant.address.toLowerCase());
-    participantUpdatesPromises.push(
-      participantDocRef.set(participant, { merge: true })
-    );
-  }
-  await Promise.all([summaryUpdatePromise, ...participantUpdatesPromises]);
 }
 
 async function fbCeremonyExists(id) {
@@ -110,26 +99,28 @@ async function fbCeremonyExists(id) {
   return (await docRef.get()).exists;
 }
 
-async function addFBCeremony(summaryData, participants) {
+async function addFBCeremony(summaryData) {
   try {
-    const docRef = db.collection("ceremonies").doc(summaryData.id);
-    await docRef.set({
-      ...summaryData,
-      lastSummaryUpdate: new Date(),
-      lastParticipantsUpdate: new Date()
-    });
-    const ceremonyParticipantsDocRef = db
-      .collection("ceremonyParticipants")
-      .doc(summaryData.id);
-    await ceremonyParticipantsDocRef.set({
-      id: summaryData.id
-    });
-    const participantPromises = [];
-    for (const participant of participants) {
-      participantPromises.push(addParticipant(summaryData.id, participant));
-    }
-    await Promise.all(participantPromises);
-    return;
+    const doc = await db.collection("ceremonies").add(summaryData);
+
+    console.log(`new ceremony added with id ${doc.id}`)
+    // await docRef.set({
+    //   ...summaryData,
+    //   lastSummaryUpdate: new Date(),
+    //   lastParticipantsUpdate: new Date()
+    // });
+    // const ceremonyParticipantsDocRef = db
+    //   .collection("ceremonyParticipants")
+    //   .doc(summaryData.id);
+    // await ceremonyParticipantsDocRef.set({
+    //   id: summaryData.id
+    // });
+    // const participantPromises = [];
+    // for (const participant of participants) {
+    //   participantPromises.push(addParticipant(summaryData.id, participant));
+    // }
+    // await Promise.all(participantPromises);
+    return doc.id;
   } catch (e) {
     throw new Error(`error adding ceremony data to firebase: ${e}`);
   }
@@ -145,9 +136,41 @@ async function addParticipant(ceremonyId, participant) {
   return participantRef.set(participant);
 }
 
+//TODO - deprecated  - use ceremonies/*/events
+async function addCeremonyEvent(event) {
+  try {
+    const doc = await db
+      .collection("ceremonyEvents")
+      .add(event);
+    console.log(`Event added for ceremony ${event.ceremonyId}. Id: ${doc.id}`);
+  } catch (e) {
+    throw new Error(`error adding ceremony event to firebase: ${e}`);
+  }
+};
+
+async function addStatusUpdateEvent(ceremonyId, message) {
+  try {
+    const event = {
+      timestamp: new Date(),
+      acknowledged: false,
+      eventType: 'STATUS_UPDATE',
+      sender: 'SERVER',
+      message,
+    }
+    const doc = await db
+      .collection("ceremonies")
+      .doc(ceremonyId)
+      .collection('events')
+      .add(event);
+    console.log(`Event added for ceremony ${ceremonyId}. Id: ${doc.id}`);
+  } catch (e) {
+    throw new Error(`error adding ceremony event to firebase: ${e}`);
+  }
+
+}
+
 function firebaseCeremonyJsonToSummary(json) {
   for (const prop of [
-    "lastParticipantsUpdate",
     "lastSummaryUpdate",
     "startTime",
     "endTime",
@@ -175,6 +198,41 @@ function firebaseParticipantJsonToParticipant(json) {
   return json;
 }
 
+const ceremonyEventListener = async (circuitFileUpdateHandler) => {
+  console.log(`starting events listener...`);
+  const eventsCollection = db.collectionGroup("events");
+  const query = eventsCollection.where('acknowledged', '==', false)
+      .where('eventType', 'in', ['CIRCUIT_FILE_UPLOAD']);
+  
+  const snap = await query.get();
+  console.debug(`snap ${snap.size}`);
+
+  query.onSnapshot(querySnapshot => {
+    console.log(`Ceremony events notified: ${JSON.stringify(querySnapshot.docChanges().length)}`);
+    querySnapshot.docChanges().forEach(docSnapshot => {
+      console.debug(`changed doc: ${docSnapshot.type}`);
+      if (docSnapshot.type !== 'removed') {
+        var event = docSnapshot.doc.data();
+        const ceremony = docSnapshot.doc.ref.parent.parent;
+        console.debug(`Event: ${JSON.stringify(event)} ceremony Id: ${ceremony.id}`);
+        switch (event.eventType) {
+          case 'CIRCUIT_FILE_UPLOAD': {
+            // Coordinator advises that r1cs file has been uploaded
+            // Handle the r1cs file
+            console.debug(`Have CIRCUIT_FILE_UPLOAD event`)
+            circuitFileUpdateHandler(ceremony.id); // This happens asynchronously
+            docSnapshot.doc.ref.update({acknowledged: true});
+            break;
+          }
+          case 'PREPARED': { break; }
+          case 'CREATE': { break; }
+        }
+    }});
+  }, err => {
+    console.log(`Error while listening for ceremony events ${err}`);
+  });
+};
+
 module.exports = {
   getFBSummaries,
   getFBSummary,
@@ -182,5 +240,8 @@ module.exports = {
   updateFBSummary,
   updateFBCeremony,
   fbCeremonyExists,
-  addFBCeremony
+  addFBCeremony,
+  addCeremonyEvent,
+  ceremonyEventListener,
+  addStatusUpdateEvent,
 };

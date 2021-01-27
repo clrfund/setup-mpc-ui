@@ -11,16 +11,23 @@ const {
 } = require("./FirebaseApi");
 const { shallowPick } = require("./utils");
 
+const CeremonyStates = {
+  PRESELECTION: "PRESELECTION",
+  RUNNING: "RUNNING",
+  PAUSED: "PAUSED",
+  COMPLETED: "COMPLETED",
+};
+
 async function getCachedSummaries() {
   // return array of all ceremonies (WITHOUT detailed participant data), from firebase
   const summaries = await getFBSummaries();
   summaries.sort((a, b) => {
     let aProgress = a.ceremonyProgress;
-    if (a.ceremonyState === "PRESELECTION") {
+    if (a.ceremonyState === CeremonyStates.PRESELECTION) {
       aProgress = -1;
     }
     let bProgress = b.ceremonyProgress;
-    if (b.ceremonyState === "PRESELECTION") {
+    if (b.ceremonyState === CeremonyStates.PRESELECTION) {
       bProgress = -1;
     }
     return aProgress - bProgress;
@@ -67,11 +74,11 @@ async function getAndUpdateStaleSummaries() {
   await Promise.all(updatePromises);
   summaries.sort((a, b) => {
     let aProgress = a.ceremonyProgress;
-    if (a.ceremonyState === "PRESELECTION") {
+    if (a.ceremonyState === CeremonyStates.PRESELECTION) {
       aProgress = -1;
     }
     let bProgress = b.ceremonyProgress;
-    if (b.ceremonyState === "PRESELECTION") {
+    if (b.ceremonyState === CeremonyStates.PRESELECTION) {
       bProgress = -1;
     }
     return aProgress - bProgress;
@@ -91,63 +98,106 @@ async function getCachedCeremony(id) {
 async function getAndUpdateStaleCeremony(id) {
   // get full ceremony data, from mpc server
   const summary = await getFBSummary(id);
-  const mpcCeremony = await getMPCCeremony(summary.serverURL, summary.sequence);
-  await updateFBCeremony({ ...mpcCeremony, id });
-  const updatedCeremony = await getFBCeremony(id);
-  return updatedCeremony;
+  console.log(`getAndUpdateStaleCeremony - got summary`);
+  // TODO - get server status - or make this push updates??
+  //const mpcCeremony = await getMPCCeremony(summary.serverURL, summary.sequence);
+  //await updateFBCeremony({ ...mpcCeremony, id });
+  //const updatedCeremony = await getFBCeremony(id);
+  //return updatedCeremony;
+  return summary;
 }
 
 async function addCeremony(addCeremonyJson) {
   // add a new ceremony. throws if fields are missing or malformed, or if can't connect to MPC server, or if such id already exists
   const addCeremonyData = validateAddCeremonyJson(addCeremonyJson);
-  const ceremony = await getMPCCeremony(addCeremonyData.serverURL);
-  const { participants, ...rest } = ceremony;
+  addCeremonyData.ceremonyState = CeremonyStates.PRESELECTION;
+  addCeremonyData.paused = false;
+  addCeremonyData.ceremonyProgress = 0;
+  //const ceremony = await getMPCCeremony(addCeremonyData.serverURL);
+  //const { participants, ...rest } = ceremony;
 
-  const summaryData = {
-    ...addCeremonyData,
-    ...rest
+  //const summaryData = {
+  //  ...addCeremonyData,
+  //  ...rest
+  //};
+
+  //if (await fbCeremonyExists(summaryData.id)) {
+  //  throw new Error("ceremony with this id already exists");
+  //}
+  const id = await addFBCeremony(addCeremonyData);
+  return id;
+}
+
+const parseDate = (dateString) => {
+  try {
+    return Date.parse(dateString);
+  } catch (err) {
+    console.log(`Error parsing date: ${err.message}`);
   };
-
-  if (await fbCeremonyExists(summaryData.id)) {
-    throw new Error("ceremony with this id already exists");
-  }
-  await addFBCeremony(summaryData, participants);
 }
 
 function validateAddCeremonyJson(addCeremonyJson) {
   const requiredProps = [
-    "id",
     "title",
-    "serverURL",
     "description",
-    "instructions",
-    "github",
-    "homepage",
-    "adminAddr"
   ];
 
-  const addCeremonyData = shallowPick(addCeremonyJson, requiredProps, []);
+  const optionalProps = [
+    "circuitFileName",
+    "startTime",
+    "endTime",
+    "minParticipants", 
+    "ceremonyState",
+    "paused",
+    "selectBlock",
+    "ceremonyProgress",
+  ];
+
+  if (addCeremonyJson.startTime) { addCeremonyJson.startTime = parseDate(addCeremonyJson.startTime); };
+  if (addCeremonyJson.endTime) { addCeremonyJson.endTime = parseDate(addCeremonyJson.endTime); };
+
+  const addCeremonyData = shallowPick(addCeremonyJson, requiredProps, optionalProps);
 
   for (const property of requiredProps) {
     addCeremonyData[property] = addCeremonyData[property].toString();
   }
 
-  if (
-    !isURL(addCeremonyData.serverURL) ||
-    !isGithubURL(addCeremonyData.github) ||
-    !isURL(addCeremonyData.homepage) ||
-    !isAddr(addCeremonyData.adminAddr)
-  ) {
-    throw new Error("ceremony creation data is invalid");
-  }
+  //if (
+    //!isURL(addCeremonyData.serverURL) ||
+    //!isGithubURL(addCeremonyData.github) ||
+    //!isURL(addCeremonyData.homepage) ||
+    //!isAddr(addCeremonyData.adminAddr)
+  //) {
+  //  throw new Error("ceremony creation data is invalid");
+  //}
 
   return addCeremonyData;
 }
+
+const getUserStatus = (userId) => {
+  // userId will contain either user (e.g. github email, or a signature)
+  console.log(userId);
+  var status = 'USER';
+  console.log(`status for ${userId.userid} - ${process.env.COORDINATOR_USERS}`);
+  if (userId.userid) {
+    if (process.env.COORDINATOR_USERS.indexOf(userId.userid) > 0) {
+      status = 'COORDINATOR'
+    };
+  };
+  if (status === 'USER' && userId.signature) {
+    // ecrecover signature. Compare to configured admin address
+    const adminAddress = process.env.ADMIN_ADDRESS;
+
+  };
+  return status;
+};
 
 module.exports = {
   getCachedSummaries,
   getCachedCeremony,
   getAndUpdateStaleSummaries,
   getAndUpdateStaleCeremony,
-  addCeremony
+  addCeremony,
+  CeremonyStates,
+  getUserStatus,
 };

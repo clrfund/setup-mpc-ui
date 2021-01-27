@@ -1,8 +1,8 @@
-import { Link, RouteProps, useParams } from "react-router-dom";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef, useContext } from "react";
 import * as React from "react";
 import styled from "styled-components";
 import { ReactNode } from "react";
+import { DataGrid, ColDef, ValueGetterParams, CellParams } from '@material-ui/data-grid';
 import {
   textColor,
   lighterBackground,
@@ -12,45 +12,34 @@ import {
   CeremonyTitle,
   Center
 } from "../styles";
-import { Ceremony, Participant } from "../types/ceremony";
-import { getCeremonyData, getCeremonyDataCached } from "../api/ZKPartyApi";
+import { Ceremony, CeremonyEvent, Contribution, ContributionSummary, Participant } from "../types/ceremony";
+import { ceremonyEventListener, ceremonyUpdateListener, contributionUpdateListener, getCeremony } from "../api/FirestoreApi";
+import { createStyles, makeStyles, Theme, Typography, withStyles, Container } from "@material-ui/core";
+import Fab from '@material-ui/core/Fab';
+import EditIcon from '@material-ui/icons/Edit';
+import CloseIcon from '@material-ui/icons/Close';
+import moment from "moment";
+import './styles.css';
+import { AuthStateContext } from "../state/AuthContext";
+import { SelectedCeremonyContext, useSelectionContext } from "../state/SelectionContext";
+import { useSnackbar } from "notistack";
+import { ceremonyStatus } from "../utils/utils";
 
 const CeremonyDetailsTable = styled.table`
   text-align: right;
   font-size: 11pt;
   width: 100%;
 
-  td {
+  td.title {
     padding-left: 10px;
-  }
-`;
-
-const HomeLinkContainer = styled.div`
-  position: absolute;
-  top: 16px;
-  left: 16px;
-
-  a {
     color: ${accentColor};
-
-    &:hover {
-      color: ${textColor};
-      background-color: ${secondAccent};
-    }
+  }
+  td.content {
+    padding-left: 10px;
+    float: left;
+    color: ${textColor};
   }
 `;
-
-const TableCell = styled.span`
-  padding: 2px 5px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-`;
-
-const TableHeader = styled.span`
-  display: inline-block;
-  color: "white";
-`;
-//  color: ${props => props.accentColor};
 
 const NotFoundContainer = styled.div`
   width: 512px;
@@ -74,59 +63,124 @@ const CeremonyDetailsSubSection = styled.div`
   box-sizing: border-box;
 `;
 
-export const CeremonyPage = () => {
-  let { id } = useParams<{ id: string }>();
-
+export const CeremonyPage = (props: {onClose: ()=> void }) => {
   const [loaded, setLoaded] = useState<boolean>(false);
   const [ceremony, setCeremony] = useState<null | Ceremony>(null);
+  const [contributions, setContributions] = useState<ContributionSummary[]>([]);
+  const ceremonyListenerUnsub = useRef<(() => void) | null>(null);
+  const contributionListenerUnsub = useRef<(() => void) | null>(null);
+  const eventsListenerUnsub = useRef<(() => void) | null>(null);
+  const loadingContributions = useRef(false);
+  const [selection, dispatch] = useSelectionContext();
+  const { enqueueSnackbar } = useSnackbar();
 
-  const refreshCeremony = () => {
-    getCeremonyData(id)
-      .then(ceremony => {
-        setCeremony(ceremony);
-      })
-      .catch(err => {
-        console.error(`error getting ceremony: ${err}`);
-      });
+  let { ceremonyId } = selection;
+  console.log(`have id ${ceremonyId}`);
+
+  const statusUpdate = (event: CeremonyEvent) => {
+    enqueueSnackbar(event.message);
   };
 
-  useEffect(() => {
-    getCeremonyDataCached(id)
-      .then(ceremonyData => {
-        setCeremony(ceremonyData);
-        setLoaded(true);
-        refreshCeremony();
-        // TODO: clear interval with returned function for useEffect
-        setInterval(refreshCeremony, 15000);
-      })
-      .catch(() => {
-        setLoaded(true);
-      });
-  }, [loaded]);
+  const refreshCeremony = async () => {
+    const c = ceremonyId ? await getCeremony(ceremonyId) : undefined;
+    if (c !== undefined) setCeremony(c);
+  };
+
+  const updateContribution = (doc: ContributionSummary, changeType: string, oldIndex?: number) => {
+    // A contribution has been updated
+    console.log(`contribution update: ${doc.queueIndex} ${changeType} ${oldIndex}`);
+    let newContributions = contributions;
+    switch (changeType) {
+      case 'added': {
+        newContributions.push(doc);
+        break;
+      }
+      case 'modified': {
+        if (oldIndex !== undefined) newContributions[oldIndex] = doc;
+        break;
+      }
+      case 'removed': {
+        if (oldIndex !== undefined) newContributions.splice(oldIndex, 1);
+        break;
+      }
+    }
+    setContributions(newContributions);
+  }
+
+  if (!loaded) {
+    refreshCeremony()
+      .then(() => setLoaded(true));
+  }
+
+  if (!eventsListenerUnsub.current && ceremonyId) {
+    // Start ceremony listener
+    ceremonyEventListener(ceremonyId, statusUpdate)
+        .then(unsub => eventsListenerUnsub.current = unsub);
+  }
+
+  if (!ceremonyListenerUnsub.current && ceremonyId) {
+    // Start ceremony listener
+    ceremonyUpdateListener(ceremonyId, setCeremony)
+        .then(unsub => ceremonyListenerUnsub.current = unsub);
+  }
+
+  if (!loadingContributions.current && ceremonyId) {
+    // Start contribution listener
+    contributionUpdateListener(ceremonyId, updateContribution)
+        .then(unsub => contributionListenerUnsub.current = unsub);
+    loadingContributions.current = true;
+  }
+
+  const gridRows = contributions.map(v => {
+    return {
+      ...v, 
+      id: v.queueIndex,
+      timestamp: v.timeCompleted ? moment(v.timeCompleted.toDate()).format('lll') : '',
+      duration: `${Math.round(moment.duration(v.duration, 'seconds').asMinutes())}m`,
+    }
+  });
+
+  const contributionStats = (): {completed: number, waiting: number} => {
+    let result = {completed: 0, waiting: 0};
+    contributions.forEach(c => {
+      switch (c.status) {
+        case 'COMPLETE': result.completed++; break;
+        case 'WAITING': result.waiting++; break;
+      }
+    });
+    return result;
+  }
+
+  const contribStats = contributionStats();
+
+  const handleEdit = () => {
+    dispatch({ type: 'EDIT_CEREMONY', ceremonyId });
+  };
+
+  const handleClose = () => {
+    if (ceremonyListenerUnsub.current) ceremonyListenerUnsub.current();
+    if (contributionListenerUnsub.current) contributionListenerUnsub.current();
+    props.onClose();
+  };
 
   return (
     <>
-      <HomeLinkContainer>
-        <Link to="/">home</Link>
-      </HomeLinkContainer>
       {ceremony ? (
-        <PageContainer>
+        <PageContainer >
           <br />
-          <CeremonyDetails ceremony={ceremony}></CeremonyDetails>
+          <div style={{ width: '80%', display: 'flex' }}>
+            <div style={{ marginLeft: 'auto' }}>
+              <CeremonyDetails 
+                ceremony={ceremony} 
+                numContCompleted={contribStats.completed} 
+                numContWaiting={contribStats.waiting} />
+            </div>
+            <div style={{ float: 'right', marginLeft: 'auto' }}>
+              <Actions handleEdit={handleEdit} handleClose={handleClose} />
+            </div>
+          </div>
           <br />
-          <ParticipantTable
-            participants={ceremony.participants ? ceremony.participants : []}
-            headers={[
-              { title: "connection", width: "100px" },
-              { title: "address", width: "400px" },
-              { title: "status", width: "100px" }
-            ]}
-            cols={[
-              p => (p.online ? "online" : "offline"),
-              p => p.address,
-              participantStatusString
-            ]}
-          />
+          <ContributionsGrid contributions={gridRows} />
         </PageContainer>
       ) : (
         <PageContainer>
@@ -140,40 +194,70 @@ export const CeremonyPage = () => {
   );
 };
 
-const CeremonyDetails = (props: { ceremony: Ceremony }) => {
+const Actions = (props: {handleEdit: ()=>void, handleClose: ()=> void}) => {
+  return (
+    <AuthStateContext.Consumer>{Auth => {
+      return (<div>
+        {Auth.isCoordinator ?
+          (<Fab 
+            variant="round" 
+            onClick={props.handleEdit}
+            aria-label="edit">
+            <EditIcon />
+          </Fab>) 
+          : (<></>)
+        }
+        <Fab 
+          variant="round" 
+          onClick={props.handleClose}
+          aria-label="close">
+          <CloseIcon />
+        </Fab>
+      </div>
+      )}}
+    </AuthStateContext.Consumer>
+  );
+}
+
+const CeremonyDetails = (props: { ceremony: Ceremony, numContCompleted: number, numContWaiting: number  }) => {
+  //console.debug(`start ${props.ceremony.startTime}`);
+
+  const status = ceremonyStatus(props.ceremony);
+
   return (
     <CeremonyDetailsContainer>
       <CeremonyTitle>{props.ceremony.title}</CeremonyTitle>
-
       <CeremonyDetailsSubSection>
         <Center>
           <CeremonyDetailsTable>
             <tbody>
               <tr>
-                <td>status</td>
-                <td>{props.ceremony.ceremonyState}</td>
+                <td className='title'>Status</td>
+                <td className='content'>{status}</td>
               </tr>
               <tr>
-                <td>start time</td>
-                <td>{props.ceremony.startTime.toLocaleString()}</td>
+                <td className='title'>Start Time</td>
+                <td className='content'>{moment(props.ceremony.startTime).format('lll')}</td>
               </tr>
               <tr>
-                <td>end time</td>
-                <td>{props.ceremony.endTime.toLocaleString()}</td>
+                <td className='title'>End Time</td>
+                <td className='content'>{props.ceremony.endTime ? moment(props.ceremony.endTime).format('lll') : ''}</td>
               </tr>
               <tr>
-                <td>hompage</td>
-                <td>
-                  <a href={props.ceremony.homepage}>
-                    {props.ceremony.homepage}
-                  </a>
-                </td>
+                <td className='title'>Minimum Participants</td>
+                <td className='content'>{props.ceremony.minParticipants}</td>
               </tr>
               <tr>
-                <td>github</td>
-                <td>
-                  <a href={props.ceremony.github}>{props.ceremony.github}</a>
-                </td>
+                <td className='title'>Contributions</td>
+                <td className='content'>{props.numContCompleted} completed, {props.numContWaiting} waiting</td>
+              </tr>
+              <tr>
+                <td className='title'>Circuit File</td>
+                <td className='content'>{props.ceremony.circuitFileName}</td>
+              </tr>
+              <tr>
+                <td className='title'>Number of Constraints</td>
+                <td className='content'>{props.ceremony.numConstraints}</td>
               </tr>
             </tbody>
           </CeremonyDetailsTable>
@@ -186,59 +270,44 @@ const CeremonyDetails = (props: { ceremony: Ceremony }) => {
   );
 };
 
-const participantStatusString = (participant: Participant) => {
-  let statusString: string = participant.state;
-  if (participant.state === "RUNNING" && participant.computeProgress < 1) {
-    statusString = `RUNNING: ${Math.round(participant.computeProgress)}%`;
-  } else if (
-    participant.state === "RUNNING" &&
-    participant.computeProgress === 1
-  ) {
-    statusString = "VERIFYING";
-  }
+const columns: ColDef[] = [
+  { field: 'queueIndex', headerName: '#', description: 'Queue position', type: 'number', width: 50, sortable: true },
+  { field: 'timestamp', headerName: 'Time', width: 180, sortable: true },
+  { field: 'status', headerName: 'Status', width: 120, sortable: false },
+  { field: 'duration', headerName: 'Duration', type: 'string', width: 90, sortable: false },
+  { field: 'hash', 
+    headerName: 'Hash',
+    description: 'The hash resulting from this contribution',
+    sortable: false,
+    width: 180,
+  },
+  { field: 'gistUrl', 
+    headerName: 'Attestation',
+    description: 'Link to the attestation',
+    sortable: false,
+    width: 120,
+    renderCell: (params: CellParams) => {
+      const v = params.value?.toString();
+      return (
+        v ? 
+          <a href={v} target='_blank' style={{ color: 'white' }}>{'https://...'}</a>
+        : <></>
+      )},
+  },
+];
 
-  return statusString;
-};
-const ParticipantTable = (props: {
-  participants: Participant[];
-  headers: { title: string; width: string }[];
-  cols: Array<(p: Participant) => ReactNode | null>;
-}) => {
+const ContributionsGrid = (props: {contributions: any[]}) => {
+  //const classes = useStyles();
   return (
-    <div>
-      <br />
-      {props.headers.map((header, i) => {
-        return (
-          <TableHeader key={i} style={{ width: header.width }}>
-            {header.title}
-          </TableHeader>
-        );
-      })}
-
-      {props.participants.map((p, j) => {
-        return (
-          <div key={j}>
-            {props.cols.map((col, i) => {
-              return (
-                <TableCell
-                  style={{
-                    width: props.headers[i].width,
-                    maxWidth: props.headers[i].width,
-                    overflow: "hidden",
-                    textOverflow: "ellipses",
-                    display: "inline-block",
-                    zIndex: 100,
-                    position: "relative"
-                  }}
-                  key={i}
-                >
-                  {col(p) + ""}
-                </TableCell>
-              );
-            })}
-          </div>
-        );
-      })}
+    <div style={{ height: 450, width: 800 }}>
+      <Typography variant="h5" style={{ color: accentColor, background: lighterBackground }}>Contributions</Typography>
+      <DataGrid 
+        rows={props.contributions} 
+        columns={columns} 
+        pageSize={8}
+        rowHeight={40}
+        sortingMode='server'
+      />
     </div>
   );
-};
+}

@@ -1,5 +1,8 @@
-import { Ceremony } from "../types/ceremony";
+import { Ceremony, Contribution } from "../types/ceremony";
+import { addCeremony as addCeremonyToDB } from "./FirestoreApi";
+import firebase from 'firebase/app';
 
+require('dotenv').config();
 const url = process.env.API_URL ? process.env.API_URL : "http://localhost:80";
 
 export function getCeremonySummariesCached(): Promise<Ceremony[]> {
@@ -76,13 +79,43 @@ export function getCeremonyData(id: string): Promise<Ceremony | null> {
       console.error(err);
       throw err;
     });
+};
+
+export function addCeremony(ceremony: Ceremony): Promise<string> {
+  return addCeremonyToDB(ceremony);
+  // throws if fetch error
+  // return fetch(`${url}/api/add-ceremony`, {
+  //   method: "post",
+  //   body: JSON.stringify(ceremony),
+  //   headers: { "Content-Type": "application/json" }
+  // })
+  //   .then(response => {
+  //     return response.json();
+  //   })
+  //   .then(json => {
+  //     return json.id;
+  //   })
+  //   .catch(err => {
+  //     console.error("Error occurred posting ceremony:");
+  //     console.error(err);
+  //     throw err;
+  //   });
+};
+
+const tryDate = (d: firebase.firestore.Timestamp | undefined, defaultResult?: Date): Date | undefined => {
+  if (!d) return defaultResult;
+  try {
+    return d.toDate();
+  } catch (e) {
+    console.warn(`error converting firebase date ${e.message}`);
+    return defaultResult;
+  }
 }
 
-function jsonToCeremony(json: any): Ceremony {
+export function jsonToCeremony(json: any): Ceremony {
   // throws if ceremony is malformed
 
   const {
-    lastParticipantsUpdate,
     lastSummaryUpdate,
     startTime,
     endTime,
@@ -91,37 +124,57 @@ function jsonToCeremony(json: any): Ceremony {
     ...rest
   } = json;
 
+  //const start: firebase.firestore.Timestamp = startTime;
+  //console.log(`start time ${start ? start.toDate().toLocaleDateString() : '-'}`);
+
+  try {
+    let c = 
+    {
+      ...rest,
+      lastSummaryUpdate: tryDate(lastSummaryUpdate),
+      startTime: tryDate(startTime, new Date()),
+      endTime: tryDate(endTime),
+    };
+    return c;
+  } catch (e) { 
+    console.warn(`Error converting ceremony: ${e.message}`);
+    throw e;
+  }
+}
+
+export const jsonToContribution = (json: any): Contribution => {
   return {
-    ...rest,
-    lastParticipantsUpdate: new Date(Date.parse(lastParticipantsUpdate)),
-    lastSummaryUpdate: new Date(Date.parse(lastSummaryUpdate)),
-    startTime: new Date(Date.parse(startTime)),
-    endTime: new Date(Date.parse(endTime)),
-    completedAt: completedAt ? new Date(Date.parse(completedAt)) : undefined,
-    participants: participants
-      ? participants.map(
-          ({
-            addedAt,
-            startedAt,
-            completedAt,
-            lastVerified,
-            lastUpdate,
-            ...rest
-          }: any) => ({
-            ...rest,
-            addedAt: new Date(Date.parse(addedAt)),
-            startedAt: startedAt ? new Date(Date.parse(startedAt)) : undefined,
-            completedAt: completedAt
-              ? new Date(Date.parse(completedAt))
-              : undefined,
-            lastUpdate: lastUpdate
-              ? new Date(Date.parse(lastUpdate))
-              : undefined,
-            lastVerified: lastVerified
-              ? new Date(Date.parse(lastVerified))
-              : undefined
-          })
-        )
-      : undefined
-  };
+    ...json
+  }
+}
+
+// Create a gist to record a contribution
+export const createGist = async (ceremonyId: string, ceremonyTitle: string, index: number, hash: string, authToken: string): Promise<string> => {
+  const summary = {
+    ceremony: ceremonyTitle,
+    ceremonyId: ceremonyId,
+    time: new Date(),
+    contributionNumber: index,
+    hash: hash,
+  }
+  const gist = {
+    description: "zkparty phase2 tusted setup MPC contribution summary",
+    public: true,
+    files: {
+        "contribution.txt": {content: JSON.stringify(summary, undefined, 2)},
+  }};
+  const res = await fetch('https://api.github.com/gists', {
+    method: 'post',
+    body: JSON.stringify(gist),
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `bearer ${authToken}`,
+    }
+
+  })
+  .catch(err => console.warn(`Error creating gist. ${err.message}`));
+  // TODO handle result, get gist url and return it.
+  console.debug(`${res ? 'ok' : 'error'}`);
+  if (res) return (await res.json()).html_url;
+  return '';
 }

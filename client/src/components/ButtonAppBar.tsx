@@ -1,5 +1,4 @@
-import React, { useContext } from 'react';
-import { Link as RouterLink } from "react-router-dom";
+import React, { useContext, useState } from 'react';
 import { withStyles, makeStyles, createStyles, Theme } from '@material-ui/core/styles';
 import IconButton from '@material-ui/core/IconButton';
 import Menu, { MenuProps } from '@material-ui/core/Menu';
@@ -10,22 +9,26 @@ import AppBar from "@material-ui/core/AppBar";
 import Toolbar from '@material-ui/core/Toolbar';
 import MenuIcon from '@material-ui/icons/MenuOutlined';
 import SettingsIcon from '@material-ui/icons/Settings';
-import ExitToAppIcon from '@material-ui/icons/ExitToApp';
 import InfoIcon from '@material-ui/icons/Info';
 import GitHubIcon from '@material-ui/icons/GitHub';
 import { ZKTitle } from "./Title";
-import { AuthContext } from "../app/App";
+import { AuthStateContext, AuthDispatchContext } from "../state/AuthContext";
 import {
   accentColor,
   secondAccent,
   textColor,
+  background,
 } from "../styles";
-import { Button } from '@material-ui/core';
-import Join from './Join';
+import { Button, Modal } from '@material-ui/core';
+import Login from './Login';
+import About from './About';
+import Options from './Options';
 
 const StyledMenu = withStyles({
   paper: {
     border: '1px solid #d3d4d5',
+    background: background,
+    color: accentColor,
   },
 })((props: MenuProps) => (
   <Menu
@@ -70,61 +73,82 @@ const useStyles = makeStyles((theme: Theme) =>
 
 // AppBar shows LOGIN or username alongside Github icon
 const LoginButton = (props: { onClick: ((event: React.MouseEvent<HTMLButtonElement, MouseEvent>) => void) | undefined; }) => {
-  const Auth = useContext(AuthContext);
 
   return (
-    Auth.isLoggedIn ?
-      <Button
-        aria-controls="github-login"
-        color="inherit"
-        endIcon={<GitHubIcon />}
-        style={{ color: accentColor }}
-        onClick={props.onClick}
-        >
-        {Auth.authUser.user.displayName || "-"}
-      </Button>
-    : 
-      <Button
-        aria-controls="github-login"
-        color="inherit"
-        endIcon={<GitHubIcon >Login</GitHubIcon>}
-        style={{ color: accentColor }}
-        onClick={props.onClick}
-        >
-        Login
-      </Button>
+    <AuthStateContext.Consumer>
+      {Auth => {return (Auth.isLoggedIn && Auth.authUser) ?
+        (<Button
+          aria-controls="github-login"
+          color="inherit"
+          endIcon={<GitHubIcon />}
+          style={{ color: accentColor }}
+          onClick={props.onClick}
+          >
+          {Auth.authUser.displayName || "-"}
+        </Button>)
+      : 
+        (<Button
+          aria-controls="github-login"
+          color="inherit"
+          endIcon={<GitHubIcon >Login</GitHubIcon>}
+          style={{ color: accentColor }}
+          onClick={props.onClick}
+          >
+          Login
+        </Button>)
+      }}
+    </AuthStateContext.Consumer>
   );
 };
 
-const MainMenu = (props: { anchorEl: Element | ((element: Element) => Element) | null | undefined; handleClose: ((event: {}, reason: "backdropClick" | "escapeKeyDown") => void) | undefined; }) => {
-  return (
-    <StyledMenu
-    id="customized-menu"
-    anchorEl={props.anchorEl}
-    keepMounted
-    open={Boolean(props.anchorEl)}
-    onClose={props.handleClose}
-  >
-    <StyledMenuItem>
-      <ListItemIcon>
-          <SettingsIcon fontSize="small" />
-      </ListItemIcon>
-      <ListItemText primary="Coordinator Settings" />
-      </StyledMenuItem>
-      <StyledMenuItem>
-      <ListItemIcon>
-          <InfoIcon fontSize="small" />
-      </ListItemIcon>
-      <ListItemText primary="About" />
-      </StyledMenuItem>
-    </StyledMenu>
 
+const MainMenu = (props: { anchorEl: Element | ((element: Element) => Element) | null | undefined; handleClose: ((event: {}, reason: "backdropClick" | "escapeKeyDown") => void) | undefined; }) => {
+  const [openAbout, setOpenAbout] = useState(false);
+  const [openOptions, setOpenOptions] = useState(false);
+
+  const toggleOptions = () => {
+    setOpenOptions(open => {
+      if (props.handleClose) props.handleClose({}, 'backdropClick');
+      return !open;
+    });
+  }
+
+  const toggleAbout = () => {
+    setOpenAbout(open => {
+      if (props.handleClose) props.handleClose({}, 'backdropClick');
+      return !open;
+    });
+  }
+
+  return (
+    <span>
+      <StyledMenu
+        id="customized-menu"
+        anchorEl={props.anchorEl}
+        keepMounted
+        open={Boolean(props.anchorEl)}
+        onClose={props.handleClose}
+      >
+      <StyledMenuItem>
+        <ListItemIcon style={{ color: accentColor }} >
+            <SettingsIcon fontSize="small" />
+        </ListItemIcon>
+        <ListItemText primary="Options" onClick={toggleOptions} />
+        </StyledMenuItem>
+        <StyledMenuItem>
+        <ListItemIcon style={{ color: accentColor }} >
+            <InfoIcon fontSize="small" />
+        </ListItemIcon>
+        <ListItemText primary="About" onClick={toggleAbout}/>
+        </StyledMenuItem>
+      </StyledMenu>
+      <Options open={openOptions} close={toggleOptions} />
+      <About open={openAbout} close={toggleAbout} />
+    </span>
   );
 };
 
 const LoginMenu = (props: { anchorEl: Element | ((element: Element) => Element) | null | undefined; handleClose: (() => void) | undefined; }) => {
-  const Auth = useContext(AuthContext);
-
   return (
     <StyledMenu
       id="customized-menu"
@@ -134,44 +158,39 @@ const LoginMenu = (props: { anchorEl: Element | ((element: Element) => Element) 
       onClose={props.handleClose}
     >
       <StyledMenuItem>
-        {Auth.isLoggedIn ?
-          (<div>
-            <ListItemIcon>
-              <ExitToAppIcon fontSize="small" />
-            </ListItemIcon>
-            <ListItemText primary="Log Out" />
-          </div>
-        ) : (
-          <Join close={props.handleClose}/>
-        )}
+        <Login close={props.handleClose}/>
       </StyledMenuItem>
     </StyledMenu>
 
   );
 };
 
-
-
 export default function ButtonAppBar() {
-    const [menuAnchorEl, setMenuAnchorEl] = React.useState<null | HTMLElement>(null);
-    const [loginAnchorEl, setLoginAnchorEl] = React.useState<null | HTMLElement>(null);
-    const classes = useStyles();
+  const [menuAnchorEl, setMenuAnchorEl] = React.useState<null | HTMLElement>(null);
+  const [loginAnchorEl, setLoginAnchorEl] = React.useState<null | HTMLElement>(null);
+  const AuthDispatch = React.useContext(AuthDispatchContext);
+  const classes = useStyles();
 
-    const handleMenuClick = (event: React.MouseEvent<HTMLElement>) => {
-        setMenuAnchorEl(event.currentTarget);
-    };
-    
-    const handleMenuClose = () => {
-      setMenuAnchorEl(null);
-    };
-        
-    const handleLoginClick = (event: React.MouseEvent<HTMLElement>) => {
-      setLoginAnchorEl(event.currentTarget);
+  const handleMenuClick = (event: React.MouseEvent<HTMLElement>) => {
+      setMenuAnchorEl(event.currentTarget);
+  };
+  
+  const handleMenuClose = () => {
+    setMenuAnchorEl(null);
+  };
+      
+  const handleLoginClick = (event: React.MouseEvent<HTMLElement>) => {
+    setLoginAnchorEl(event.currentTarget);
   };
   
   const handleLoginClose = () => {
     setLoginAnchorEl(null);
   };
+
+  const handleLogout = () => {
+    console.log('loggin out');
+    if (AuthDispatch) AuthDispatch({type: 'LOGOUT'});
+  }
       
   return (
     <div className={classes.root}>
